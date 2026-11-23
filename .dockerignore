@@ -1,0 +1,13 @@
+.git
+.gitignore
+Jenkinsfile
+README.md
+k8s/
+helm/
+argocd/
+environments/
+docs/
+**/__pycache__/
+**/*.pyc
+.venv/
+.pytest_cache/

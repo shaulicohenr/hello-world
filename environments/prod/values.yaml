@@ -1,0 +1,12 @@
+replicaCount: 4
+image:
+  tag: v1
+service:
+  nodePort: 30083
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
