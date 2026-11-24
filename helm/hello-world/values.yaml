@@ -1,6 +1,6 @@
 replicaCount: 2
 image:
-  repository: your-dockerhub-user/hello-world
+  repository: shaulicohenr/hello-world
   tag: v1
   pullPolicy: IfNotPresent
 containerPort: 5000
