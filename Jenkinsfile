@@ -29,8 +29,14 @@ pipeline {
         }
         stage('Trivy Scan') {
             steps {
-                // Fails the build on CRITICAL vulnerabilities. Requires the trivy binary on the agent.
-                sh 'trivy image --exit-code 1 --severity CRITICAL --no-progress ${IMAGE_NAME}:${IMAGE_TAG}'
+                    sh '''
+                        docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v trivy-cache:/root/.cache/ \
+                        aquasec/trivy:latest image \
+                        --exit-code 1 --severity CRITICAL --no-progress \
+                        ${IMAGE_NAME}:${IMAGE_TAG}
+                    '''
             }
         }
         stage('Push to Docker Hub') {
