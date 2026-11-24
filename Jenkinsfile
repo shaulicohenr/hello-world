@@ -47,7 +47,7 @@ pipeline {
         }
         stage('Push to Docker Hub') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                withCredentials([usernamePassword(credentialsId: 'dockerhub',
                                                   usernameVariable: 'DH_USER',
                                                   passwordVariable: 'DH_PASS')]) {
                     sh '''
@@ -70,6 +70,25 @@ pipeline {
                         kubectl apply -n ${K8S_NAMESPACE} -f k8s/deployment.yaml
                         kubectl apply -n ${K8S_NAMESPACE} -f k8s/service.yaml
                         kubectl rollout status deployment/hello-world -n ${K8S_NAMESPACE} --timeout=120s
+                    '''
+                }
+            }
+        }
+        stage('Update GitOps') {
+            // Bumps the dev image tag in Git so Argo CD rolls it out to the dev environment.
+            // Only environments/dev/values.yaml is committed (the sed edit of k8s/deployment.yaml stays local).
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'github-creds',
+                                                  usernameVariable: 'GH_USER',
+                                                  passwordVariable: 'GH_TOKEN')]) {
+                    sh '''
+                        sed -i "s|tag: .*|tag: ${IMAGE_TAG}|" environments/dev/values.yaml
+                        git config user.email "jenkins@ci.local"
+                        git config user.name "jenkins"
+                        git add environments/dev/values.yaml
+                        git commit -m "ci: deploy ${IMAGE_TAG} to dev [skip ci]"
+                        git pull --rebase --autostash https://${GH_USER}:${GH_TOKEN}@github.com/shaulicohenr/hello-world.git ${REPO_BRANCH}
+                        git push https://${GH_USER}:${GH_TOKEN}@github.com/shaulicohenr/hello-world.git HEAD:${REPO_BRANCH}
                     '''
                 }
             }

@@ -1,6 +1,6 @@
 # Hello World project: Flask on Kubernetes with Jenkins, Helm and Argo CD
 ## Project overview
-A minimal Flask application that returns **Hello World**, delivered through a complete CI/CD and GitOps ## workflow:
+A minimal Flask application that returns **Hello World**, delivered through a complete CI/CD and GitOps workflow:
 1. **CI (Jenkins)** – clones the repo, runs tests, builds the Docker image, scans it with Trivy, tags and pushes it to Docker Hub, and deploys to Kubernetes.
 2. **Helm** – the Kubernetes manifests are packaged as a Helm chart.
 3. **GitOps (Argo CD)** – Argo CD syncs the chart from GitHub automatically.
@@ -8,7 +8,7 @@ A minimal Flask application that returns **Hello World**, delivered through a co
 5. **App of Apps** – one parent Argo CD application manages all three environments.
 ### Repository layout:
 .
-├── app/                    
+├── app/                    # Flask application and tests
 ├── Dockerfile
 ├── Jenkinsfile
 ├── k8s/                    # Plain manifests (used by Jenkins)
@@ -81,11 +81,14 @@ Open `http://<node-ip>:30080`.
 ### 4. Jenkins pipeline
 1. In Jenkins, install the plugins: **Pipeline**, **Git**, **Credentials Binding**.
 2. Add credentials:
-   - `dockerhub-creds` – *Username with password* (Docker Hub user + access token)
+   - `dockerhub` – *Username with password* (Docker Hub user + access token)
+   - `github-creds` – *Username with password* (GitHub user + Personal Access Token with write access to the repo; used by the *Update GitOps* stage)
    - `kubeconfig` – *Secret file* (your k3s kubeconfig; make sure `server:` points to an address reachable from Jenkins, not `127.0.0.1`)
 3. Create a **Pipeline** job → *Pipeline script from SCM* → Git → your repo URL, branch `main`, script path `Jenkinsfile`.
 4. Click **Build Now**.
-Pipeline stages: Clone Repository → Build Application → Build Docker Image → Security Scan (Trivy) → Tag Image → Push to Docker Hub → Deploy to Kubernetes.
+Pipeline stages: Clone Repository → Build Application → Build Docker Image → Security Scan (Trivy) → Tag Image → Push to Docker Hub → Deploy to Kubernetes → Update GitOps.
+
+The last stage commits the new image tag to `environments/dev/values.yaml`, so Argo CD deploys the build to the `dev` environment. Promotion to `stage` and `prod` is manual (edit the tag, commit, push). The commit message contains `[skip ci]` to avoid build loops if a webhook/SCM trigger is added later.
 #### Jenkins screenshots
 > Add a screenshot of a successful run here after your first green build:
 ```markdown
@@ -132,3 +135,25 @@ kubectl get pods -n dev; kubectl get pods -n stage; kubectl get pods -n prod
 ```
 Access: `http://<node-ip>:30081` (dev), `:30082` (stage), `:30083` (prod).
 To promote a release, edit `image.tag` in `environments/<env>/values.yaml`, commit and push; Argo CD rolls it out.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `pytest` / *Build Application* stage fails with `No module named venv` | `python3-venv` is missing on the Jenkins agent | `apt-get install -y python3-venv` on the agent (or in the custom Jenkins image) |
+| `docker: command not found` or `permission denied` on `/var/run/docker.sock` | Jenkins cannot reach Docker | Install the Docker CLI on the agent, mount the socket if Jenkins runs in a container, and add the `jenkins` user to the `docker` group |
+| *Security Scan* stage fails | Trivy found a CRITICAL vulnerability, or `trivy` is not installed | Read the Trivy report and upgrade the vulnerable package in `app/requirements.txt` or the base image. Check `trivy --version` on the agent |
+| *Push to Docker Hub* fails with `unauthorized` | Wrong credentials ID or an expired token | Make sure a credential with ID `dockerhub` exists and holds a valid access token |
+| *Deploy to Kubernetes* fails with `connection refused` on `127.0.0.1:6443` | The kubeconfig `server:` points to localhost | Set `server:` to the node IP that is reachable from Jenkins and re-upload the `kubeconfig` secret file |
+| *Update GitOps* fails with `403` / `Authentication failed` | Missing or read-only GitHub token | Create a PAT with write access to the repo and store it as the `github-creds` credential |
+| *Update GitOps* fails with `rejected (non-fast-forward)` | `main` moved while the build was running | Re-run the build (the stage already runs `git pull --rebase` before pushing) |
+| Pods are in `ImagePullBackOff` / `ErrImagePull` | The tag does not exist on Docker Hub, or the repository name is wrong | `docker pull shaulicohenr/hello-world:<tag>` to verify, and push the missing tag (`v1`, `v2`, `v3` for the environments) |
+| Pods are `CrashLoopBackOff` or not Ready | The app crashes or the probes fail | `kubectl logs <pod>` and `kubectl describe pod <pod>`; the app must answer on port 5000 at `/healthz` |
+| Service is not reachable from the browser | Wrong node IP or port, or a firewall | `kubectl get svc -A` to confirm the NodePort (30080 plain, 30081-30083 for dev/stage/prod) and open it on the node firewall |
+| `helm install` fails with `no template` or renders nothing | Running from the wrong directory | Run it from `helm/hello-world` (`helm install hello-world .`) and verify with `helm template hello-world .` first |
+| `helm install` fails with `provided port is already allocated` | Two releases use the same NodePort | Give each release a different `service.nodePort` (the `environments/*` files already do) |
+| Argo CD application is `OutOfSync` or `Unknown` | Wrong `repoURL` / `path`, or the repo is private | `kubectl -n argocd describe application <name>`; check the repo URL and add repo credentials in Argo CD if the repo is private |
+| Argo CD shows `ComparisonError` for the child apps | The Helm `valueFiles` path is wrong | The path is relative to the chart: `../../environments/<env>/values.yaml` |
+| Argo CD keeps reverting manual `kubectl` changes | `selfHeal: true` is enabled | This is intended. Change the config in Git instead |
+| Both the single app and the App of Apps are deployed and fight each other | They use the same chart | Delete the single app: `kubectl delete -f argocd/application.yaml` |
+| Cannot log in to Argo CD | Unknown admin password | `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" \| base64 -d` |
