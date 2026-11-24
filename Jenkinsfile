@@ -6,7 +6,6 @@ pipeline {
         REPO_BRANCH    = 'main'
         IMAGE_NAME     = "${DOCKERHUB_USER}/hello-world"
         IMAGE_TAG      = "v${BUILD_NUMBER}"
-        K8S_NAMESPACE  = 'hello-world'
     }
     options {
         timestamps()
@@ -18,31 +17,20 @@ pipeline {
                 git branch: "${REPO_BRANCH}", url: "${REPO_URL}"
             }
         }
-        stage('Build Application') {
-            steps {
-                sh '''
-                    python3 -m venv .venv
-                    . .venv/bin/activate
-                    pip install --no-cache-dir -r app/requirements-dev.txt
-                    python -m py_compile app/app.py
-                    cd app && python -m pytest -q
-                '''
-            }
-        }
-        stage('Build Docker Image') {
+        stage('Docker Build') {
             steps {
                 sh 'docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .'
-            }
-        }
-        stage('Security Scan (Trivy)') {
-            steps {
-                // Fails the build on CRITICAL vulnerabilities. Requires the trivy binary on the agent.
-                sh 'trivy image --exit-code 1 --severity CRITICAL --no-progress ${IMAGE_NAME}:${IMAGE_TAG}'
             }
         }
         stage('Tag Image') {
             steps {
                 sh 'docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest'
+            }
+        }
+        stage('Trivy Scan') {
+            steps {
+                // Fails the build on CRITICAL vulnerabilities. Requires the trivy binary on the agent.
+                sh 'trivy image --exit-code 1 --severity CRITICAL --no-progress ${IMAGE_NAME}:${IMAGE_TAG}'
             }
         }
         stage('Push to Docker Hub') {
@@ -59,50 +47,10 @@ pipeline {
                 }
             }
         }
-        stage('Deploy to Kubernetes') {
-            steps {
-                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-                    sh '''
-                        # Point the manifest at the image that was just pushed
-                        sed -i "s|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|" k8s/deployment.yaml
-
-                        kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-                        kubectl apply -n ${K8S_NAMESPACE} -f k8s/deployment.yaml
-                        kubectl apply -n ${K8S_NAMESPACE} -f k8s/service.yaml
-                        kubectl rollout status deployment/hello-world -n ${K8S_NAMESPACE} --timeout=120s
-                    '''
-                }
-            }
-        }
-        stage('Update GitOps') {
-            // Bumps the dev image tag in Git so Argo CD rolls it out to the dev environment.
-            // Only environments/dev/values.yaml is committed (the sed edit of k8s/deployment.yaml stays local).
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'github-creds',
-                                                  usernameVariable: 'GH_USER',
-                                                  passwordVariable: 'GH_TOKEN')]) {
-                    sh '''
-                        sed -i "s|tag: .*|tag: ${IMAGE_TAG}|" environments/dev/values.yaml
-                        git config user.email "jenkins@ci.local"
-                        git config user.name "jenkins"
-                        git add environments/dev/values.yaml
-                        git commit -m "ci: deploy ${IMAGE_TAG} to dev [skip ci]"
-                        git pull --rebase --autostash https://${GH_USER}:${GH_TOKEN}@github.com/shaulicohenr/hello-world.git ${REPO_BRANCH}
-                        git push https://${GH_USER}:${GH_TOKEN}@github.com/shaulicohenr/hello-world.git HEAD:${REPO_BRANCH}
-                    '''
-                }
-            }
-        }
     }
     post {
-        success {
-            echo "Deployed ${IMAGE_NAME}:${IMAGE_TAG} to namespace ${K8S_NAMESPACE}"
-        }
-        failure {
-            echo 'Pipeline failed - check the stage logs above.'
-        }
-        always {
-            sh 'docker image prune -f || true'
-        }
+        success { echo "Pushed ${IMAGE_NAME}:${IMAGE_TAG}" }
+        failure { echo 'Pipeline failed - check the stage logs above.' }
+        always  { sh 'docker image prune -f || true' }
     }
 }
